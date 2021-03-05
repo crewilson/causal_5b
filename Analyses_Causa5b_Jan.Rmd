@@ -1,0 +1,1309 @@
+---
+  title: "Causa5b"
+author: "Clemence Gandaux"
+date: " Jan 2021"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+  
+Setup and packages
+
+
+```{r echo = T, results = 'hide'}
+
+#Additional packages:
+library(bindrcpp)
+library(ggplot2) 
+library(ggpubr)
+library(grid)
+library(gridExtra)
+library(lattice)
+library(lme4)
+library(lmerTest)
+library(lubridate)
+library(multcomp)
+library(plotrix)
+library(dplyr)
+library(svDialogs)
+library(tidyverse)
+
+monkey <- dlgInput("Enter monkey", Sys.info()["user"])$res
+
+```
+
+Load data if already setup and add new sessions:
+```{r}
+##For Monkey
+path <- file.path("Z:","Causa",monkey,"Causal_5b","R", "/"); #path for Windows
+# path <- ("/Volumes/Procyk_Data/Causa/Dali/csv/R/"); #path for Mac
+load(file = paste(path,"Causal5b_",monkey,".RData",sep = ""))
+
+##For Marion Macbook
+#path <- ("/Volumes/My Passport for Mac/Stage M2/Behaviour/R/"); #path for Mac
+# load(file = paste(path,"Causal4_",monkey,".RData",sep = ""))
+
+##For Clemence Macbook
+# path <- file.path("/Volumes","LaCie","Work","Causa",monkey,"Causal_5","R",""); #path for Mac
+# load(file = paste(path,"Causal5_",monkey,".RData",sep = ""))
+
+
+path <- file.path("Z:","Causa",monkey,"Causal_5b", "/")
+# path <- file.path("/","Volumes","LaCie","Work","Causa",monkey,"Causal_5","/")
+save.path <- paste(path,"R/",sep="");
+Session.list <- dir(path = path, pattern = "*.csv");
+Dates1 <- data.frame(dmy(Session.list));
+colnames(Dates1) <- c("Date");
+Dates1$fid <- Session.list;
+Dates1 <- arrange(Dates1, Date);
+
+fremoveextension <- function(x) {
+  out <- regmatches(x, regexpr("[[:alpha:]]{1}\\d{6}", x)); 
+  # out format is Xddmmyy with X the initial of the monkey's name
+  return(out)
+}
+
+Dates2 <- tibble()
+Dates2 <- length(Dates1$Date) - length(Dates$Date)
+
+if ( Dates2 > 0)
+{
+  Dates2 <- data.frame(Date=date(rep("2000-01-01", Dates2)), fid =(rep("*.csv", Dates2)))
+  Datess <- rbind(Dates, Dates2)
+  vec <- length(Dates1$fid)
+  
+  Data2 <- data.frame();
+  
+  for ( i in 1:vec) 
+  {
+    if (Dates1$fid[i] == Datess$fid[i])
+    {
+      
+    }
+    else 
+    {
+      Datess$fid[i] <- Dates1$fid[i] 
+      Datess$Date[i] <- Dates1$Date[i]
+      
+      curr_date <- sapply(Datess,FUN = fremoveextension);
+      
+      fid <- Datess$fid[i];
+      print(fid)
+      event.raw <- read.csv(file=paste(path,fid, sep= ""),sep= "", dec =",", skip = 8,  fill=TRUE);
+      
+      dum <- fremoveextension(fid)
+      
+      # When read there is an empty column
+      event.raw <- event.raw[,c(1,2)];     
+      colnames(event.raw) <- c("time","event");
+      
+      event.raw$session <- i;
+      
+      # Block number
+      event.raw$block <- cumsum(event.raw$event > 200);
+      
+      # p(free)
+      event.raw <- event.raw %>%
+        group_by(block) %>%
+        mutate(pfree = nth(event,2)) %>% 
+        ungroup();
+      
+      # p(O|A)
+      event.raw <- event.raw %>%
+        group_by(block) %>%
+        mutate(poa = nth(event,3)) %>%
+        ungroup();
+      
+      
+      Data2 <- rbind(Data2,event.raw);
+      
+      rm(event.raw)
+      
+      
+    }
+  }
+  
+  
+  
+  # Add probs and conditions
+  
+  Data2$poa <- Data2$poa-170;
+  Data2$pfree <- Data2$pfree-150;
+  
+  Data2$deltap <- Data2$poa-Data2$pfree;
+  
+  Data2$EV <- (Data2$poa+Data2$pfree)/2 # Legacy - is this really a measure of EV...?
+  
+  Data2$poa <- factor(Data2$poa);  
+  Data2$pfree <- factor(Data2$pfree);
+  
+  # Couple 1 : p(O|A) = 0.9 / p(Free) = 0
+  # Couple 2 : p(O|A) = 0 / p(Free) = 0.9
+  # Couple 3 . p(O|A) = 0.5 / p(Free) = 0.5
+  Data2 <- Data2 %>%
+    mutate(couple = 
+             case_when(
+               poa == 9 & pfree == 0 ~ 1,
+               poa == 0 & pfree == 9 ~ 2,
+               poa == 5 & pfree == 5 ~ 3)); #'mutate' permet de vectoriser plusieurs loop 'if' et 'else if' 
+  
+  Data2$couplef <- factor(Data2$couple);
+  levels(Data2$couplef) <- list('poa:0.9\npfree:0' = "1",'poa:0\npfree:0.9' = "2",'poa:0.5\npfree:0.5' = "3");
+  
+  # Time of block start
+  sess <- c(unique(Data2$session))
+  block <- c(unique(Data2$block))
+  
+  Datatest <- data.frame()
+  
+  for (isession in sess)
+  {
+    for (iblock in block)
+    {
+      Curr <- subset(Data2, session == isession & block == iblock)
+      Curr$blockstart = first(Curr$time)
+      Datatest <- rbind (Curr, Datatest)
+      rm(Curr)
+    }
+  }
+  
+  # Time of block end
+  Datatest <- arrange(Datatest, session, block)
+  Datatest2 <- data.frame()
+  sess <- c(unique(Datatest$session))
+  
+  for (isession in sess)
+  {
+    Curr <- subset(Datatest, session == isession)
+    start <- c(unique(Curr$blockstart))
+    Curr$blockend <- NA
+    {
+      for (i in start)
+      {
+        {
+          a = last(which(Curr$blockstart == i))
+          {
+            if (Curr$block[a] == 10)
+            {
+              Curr$blockend[a] = Curr$blockstart[a]
+            }
+            if (Curr$block[a] != 10)
+            {
+              Curr$blockend[a] = Curr$blockstart[a+1]
+            }
+          }
+        }
+      }  
+      Datatest2 <- rbind(Datatest2, Curr)
+      rm(Curr)
+      rm(start)
+    }
+  }
+  
+  sess <- c(unique(Datatest2$session))
+  block <- c(unique(Datatest2$block))
+  Datatest3 <- data.frame()
+  
+  for (i in sess)
+  {
+    for (j in block)
+    {
+      Curr <- subset(Datatest2, session == i & block == j) 
+      {
+        for (ii in 1:length(Curr$block))
+        {
+          if (is.na(Curr$blockend[ii]) == TRUE)
+          {
+            Curr$blockend[ii] = last(Curr$blockend)
+          }
+          if (is.na(Curr$blockend[ii]) == FALSE)
+          {
+            Curr$blockend[ii] = Curr$blockend[ii]
+          }
+        }
+        Datatest3 <- rbind(Datatest3, Curr)
+        rm(Curr)
+      }
+    }
+  }
+  
+  Data2 <- Datatest3
+  
+  # Duration of block 
+  Data2$blockduration <- as.integer(Data2$blockend) - as.integer(Data2$blockstart)
+  
+  
+  Dates <- Datess
+  
+  #Save
+  save(file = paste(save.path,"Causal5b_",monkey,".RData",sep = ""),Data, Dates) # Save monkey specific data frame
+  # save(file = paste(cwpath,"Causal5b_",monkey,".RData",sep = ""),Data, Dates) #CW local save
+}
+
+
+```
+
+Otherwise load up data from original files
+
+#```{r}
+# sauver le chemin du dossier dans path 
+
+#Clémence 
+# path <- file.path("/Volumes","LaCie","Work","Causa",monkey,"Causal_5b","") #Mac
+path <- file.path("Z:","Causa",monkey,"Causal_5b","/"); #Windows
+
+#Marion Path 
+#path <- ("/Volumes/My Passport for Mac/Stage M2/"monkey" - csv/")
+
+
+save.path <- paste(path,"R/",sep="");
+
+Session.list <- dir(path = path, pattern = "*.csv");
+Dates <- data.frame(dmy(Session.list));
+colnames(Dates) <- c("Date");
+Dates$fid <- Session.list;
+Dates <- arrange(Dates, Date);
+
+
+fremoveextension <- function(x) {
+  out <- regmatches(x, regexpr("[[:alpha:]]{1}\\d{6}", x)); 
+  # out format is Xddmmyy with X the initial of the monkey's name
+  return(out)
+}
+
+# Look at raw behav files present in the path / sapply (fonction apply) permet d'appliquer la fonction (fremoveextension) à la liste (session.list)
+inpath.list <- sapply(Dates,FUN = fremoveextension);
+
+Nsession <- length(Dates$fid);
+
+Data <- data.frame();
+
+
+if(Nsession >0){
+  
+  for(isession in 1:Nsession){  
+    
+    fid <- Dates$fid[isession];
+    print(fid)
+    event.raw <- read.csv(file=paste(path,fid, sep= ""),sep= "", dec =",", skip = 8,  fill=TRUE);
+    
+    dum <- fremoveextension(fid)
+    
+    # When read there is an empty column
+    event.raw <- event.raw[,c(1,2)];     
+    colnames(event.raw) <- c("time","event");
+    
+    event.raw$session <- isession;
+    
+    # Block number
+    event.raw$block <- cumsum(event.raw$event > 200);
+    
+    # p(free)
+    event.raw <- event.raw %>%
+      group_by(block) %>%
+      mutate(pfree = nth(event,2)) %>% 
+      ungroup();
+    
+    # p(O|A)
+    event.raw <- event.raw %>%
+      group_by(block) %>%
+      mutate(poa = nth(event,3)) %>%
+      ungroup();
+    
+    
+    Data <- rbind(Data,event.raw);
+    
+    rm(event.raw)
+    
+  }
+}
+
+# Add probs and conditions
+
+Data$poa <- Data$poa-170;
+Data$pfree <- Data$pfree-150;
+
+Data$deltap <- Data$poa-Data$pfree;
+
+Data$EV <- (Data$poa+Data$pfree)/2 # Legacy - is this really a measure of EV...?
+
+Data$poa <- factor(Data$poa);  
+Data$pfree <- factor(Data$pfree);
+
+# Couple 1 : p(O|A) = 0.9 / p(Free) = 0
+# Couple 2 : p(O|A) = 0 / p(Free) = 0.9
+# Couple 3 . p(O|A) = 0.5 / p(Free) = 0.5
+Data <- Data %>%
+  mutate(couple = 
+           case_when(
+             poa == 9 & pfree == 0 ~ 1,
+             poa == 0 & pfree == 9 ~ 2,
+             poa == 5 & pfree == 5 ~ 3)); #'mutate' permet de vectoriser plusieurs loop 'if' et 'else if' 
+
+Data$couplef <- factor(Data$couple);
+levels(Data$couplef) <- list('poa:0.9\npfree:0' = "1",'poa:0\npfree:0.9' = "2",'poa:0.5\npfree:0.5' = "3");
+
+
+# Time of block start
+sess <- c(unique(Data$session))
+block <- c(unique(Data$block))
+
+Datatest <- data.frame()
+
+for (isession in sess)
+{
+  for (iblock in block)
+  {
+    Curr <- subset(Data, session == isession & block == iblock)
+    Curr$blockstart = first(Curr$time)
+    Datatest <- rbind (Curr, Datatest)
+    rm(Curr)
+  }
+}
+
+# Time of block end
+Datatest <- arrange(Datatest, session, block)
+Datatest2 <- data.frame()
+sess <- c(unique(Datatest$session))
+
+for (isession in sess)
+{
+  Curr <- subset(Datatest, session == isession)
+  start <- c(unique(Curr$blockstart))
+  Curr$blockend <- NA
+  
+  {
+    for (i in start)
+    {
+      {
+        a=last(which(Curr$blockstart == i))
+        {
+          if (Curr$block[a] == 10)
+          {
+            Curr$blockend[a] = Curr$blockstart[a]
+          }
+          if (Curr$block[a] != 10)
+          {
+            Curr$blockend[a] = Curr$blockstart[a+1]
+          }
+        }
+      }
+    }  
+    Datatest2 <- rbind(Datatest2, Curr)
+    rm(Curr)
+    rm(start)
+  }
+}
+
+sess <- c(unique(Datatest2$session))
+block <- c(unique(Datatest2$block))
+Datatest3 <- data.frame()
+
+for (i in sess)
+{
+  for (j in block)
+  {
+    Curr <- subset(Datatest2, session == i & block == j) 
+    {
+      for (ii in 1:length(Curr$block))
+      {
+        if (is.na(Curr$blockend[ii]) == TRUE)
+        {
+          Curr$blockend[ii] = last(Curr$blockend)
+        }
+        if (is.na(Curr$blockend[ii]) == FALSE)
+        {
+          Curr$blockend[ii] = Curr$blockend[ii]
+        }
+      }
+      Datatest3 <- rbind(Datatest3, Curr)
+      rm(Curr)
+    }
+  }
+}
+
+Data <- Datatest3
+
+# Duration of block 
+Data$blockduration <- as.integer(Data$blockend) - as.integer(Data$blockstart)
+
+#Save
+save(file = paste(save.path,"Causal5b_",monkey,".RData",sep = ""),Data, Dates) # Save monkey specific data frame
+# save(file = paste(cwpath,"Causal5b_",monkey,".RData",sep = ""),Data, Dates) #CW local save
+#``` 
+
+
+```{r}
+## Computation
+
+Data$tbin <- cut(Data$time,seq(from=0,to=max(Data$time),by=30000),labels = F) #divise le temps en intervalles de 30s
+
+Data <- Data %>%
+  dplyr::group_by(session,block) %>%
+  dplyr::mutate(touch = sum(event == 74 | event == 75 )) %>%
+  dplyr::ungroup() # somme le nombre de touches par block et par session dans une même colonne
+
+Data$touchmin <- (Data$touch/Data$blockduration)*60000 #nombre de touches par minutes
+
+Data <- Data %>%
+  dplyr::group_by(session,block) %>%
+  dplyr::mutate(acttouch = sum(event == 74)) %>%
+  dplyr::ungroup() #somme les actives dans une colonne
+
+Data$acttouchmin <- (Data$acttouch/Data$blockduration)*60000 #nombre d'actives par minute
+
+Data <- Data %>%
+  dplyr::group_by(session,block) %>%
+  dplyr::mutate(inacttouch = sum(event == 75)) %>%
+  dplyr::ungroup() # somme les inactives dans une colonne
+
+Data$inacttouchmin <- (Data$inacttouch/Data$blockduration)*60000 #nombre d'inactives par minute
+
+Data <- Data %>%
+  dplyr::group_by(session,block) %>%
+  dplyr::mutate(reward = sum(event == 65)) %>%
+  dplyr::ungroup() # somme les reward dans une colonne
+
+Data$rewardmin <- (Data$reward/Data$blockduration)*60000 #nombre de reward par minute
+
+Data <- Data %>%
+  dplyr::group_by(session,block) %>%
+  dplyr::mutate(skippedrew = sum(event == 73)) %>%
+  dplyr::ungroup() # somme les reward  annulées dans une colonne
+
+Data$skippedrewardmin <- (Data$skippedrew/Data$blockduration)*60000 #nombre de reward annulées par minute
+
+# Suppression du bloc 10 (pas un vrai bloc)
+Data <- Data %>%
+  filter(block != 10)
+
+Data$actionrew <- NA
+for(action in 1:length(Data$event)){
+  if (Data$event[action]==65 && Data$event[action-1] == 74){
+    Data$actionrew[action] <- 1
+   } else{
+      Data$actionrew[action] <- 0
+}}
+
+Data <- Data %>%
+  dplyr::group_by(session,block) %>%
+  dplyr::mutate(actionrew = sum(actionrew)) %>%
+  dplyr::ungroup() # somme les actionreward dans une colonne
+
+Data$freerew <- NA
+Data <- Data %>%
+  dplyr::transmute(Data, freerew =reward-actionrew) %>%
+  dplyr::ungroup() # somme les freereward dans une colonne
+
+
+
+```
+
+
+# Touches au sein des blocs et des sessions
+```{r}
+touchcount <- Data %>%
+  dplyr::group_by(session, block, couple, blockduration)%>%
+  dplyr::summarise(acttouch = unique(acttouch), inacttouch = unique(inacttouch))%>%
+  dplyr::ungroup(); #résume le tableau avec une valeur d'acttouch et une d'inacttouch par bloc pour chaque session
+
+activ_button <- Data %>%
+  filter (event == 68);#filtre les events ou le bouton est actif uniquement
+
+button_time <- data.frame() #creation d'une nouvelle dataframe (df)
+
+sess <- c(unique(Data$session)) #creation d'un vecteur representant la liste de toutes les sessions dispo dans Data
+
+activ_button <- activ_button %>%
+  dplyr::group_by(session, block, couple, blockduration) %>%
+  dplyr::count(event) %>%
+  dplyr::ungroup(); #compte le nombre de ligne de la colonne event pour chaque bloc de chaque session dans une nouvelle colonne "n"
+
+for (isession in sess )
+{
+  Curr <- subset(activ_button, session == isession) #creer une df avec les valeurs d'une seule session définit par la boucle
+  
+  for (iblock in 1:length(Curr$block)) 
+  {
+    
+    Curr$i_button_time[iblock] = (4000*Curr$n[iblock]) #multiplie la valeur n par 4000ms (temps refractaire de la tache) pour obtenir le temps inactif du bouton pour la session
+    
+    Curr$a_button_time[iblock] = (Curr$blockduration[iblock] - Curr$i_button_time[iblock]) #definition du temps actif du bouton en soustrayant le temps inactif a la duree totale du bloc
+    
+  } 
+  
+  button_time <- rbind(button_time, Curr) #creation d'une nouvelle df regroupant toutes les dataframe "Curr" donc toutes les sessions 
+  rm(Curr)
+  
+}
+
+touchmin.df <- Data %>%
+  dplyr::group_by(session, block, couple) %>%
+  dplyr::summarise(blockduration = unique(blockduration), touchmin = first(touchmin)) %>%
+  dplyr::ungroup();  #résume le tableau avec une valeur de blockduration et de touchmin par bloc pour chaque session
+
+touchmin.df <- cbind(touchmin.df, button_time$i_button_time, button_time$a_button_time); #ajout des colonnes contenant les temps de bouton actif et inactif 
+
+colnames(touchmin.df) <- c("session", "block", "couple","blockduration", "touchmin", "inactiv_button_time","activ_button_time") #changement des noms de colonne de la df
+
+# Active touches
+active <- touchcount %>%
+  subset(select = c(session,block, couple, blockduration,acttouch))
+colnames(active) <- c("session", "block", "couple","blockduration","touch") #selectionne uniquement les actouch
+active$code <- "active" #rajoute la colonne code avec la valeur "active"
+
+# Inactive touches 
+inactive <- touchcount %>%
+  subset(select = c(session,block,couple, blockduration,inacttouch))
+colnames(inactive) <- c("session", "block","couple", "blockduration","touch") #selectionne uniquement les inactouch
+inactive$code <- "inactive" #rajoute la colonne code avec la valeur "inactive"
+
+# Active time
+active_time <- button_time %>%
+  subset(select = c(session,block,blockduration,a_button_time)) #selectionne uniquement les active time
+
+# Inactive time 
+inactive_time <- button_time %>%
+  subset(select = c(session,block,blockduration,i_button_time))  #selectionne uniquement les inactive time
+
+active <- cbind(active, active_time$a_button_time)
+colnames(active) <- c("session", "block", "couple", "blockduration","touch", "code", "button_time")
+inactive <- cbind(inactive, inactive_time$i_button_time)
+colnames(inactive) <- c("session", "block", "couple","blockduration","touch", "code", "button_time")
+
+active$norm_touch <- (active$touch/active$button_time * 60000)  #calcule une valeur d'active touches/min normalisee par le temps de bouton actif
+inactive$norm_touch <- (inactive$touch/inactive$button_time * 60000) #calcule une valeur d'inactive touches/min normalisee par le temps de bouton inactif
+
+#Pour les statistiques
+actinact.df_stat <- rbind(active,inactive)
+actinact.df <- rbind(active, inactive)
+
+compare_means(norm_touch ~ code, actinact.df_stat, method = "wilcox.test")
+
+# my_comparisons <- list(c("1","2"), c("1","3"), c("1", "4"), c("1","5"), c("2","3"), c("2","4"), c("2","5"), c("3","4"), c("3","5"), c("4", "5"))
+
+
+Figure_a <- ggplot(actinact.df, aes(x=factor(couple), y=norm_touch, fill=factor(code)))+
+  geom_boxplot() +
+  ggtitle("Nombre de touche par minutes dans les différentes probabilités de blocs")+
+  ylab("Touch per minute")+
+  xlab("Probability")+
+  scale_fill_manual(values = c("lightskyblue", "indianred2"), name = "Type of touch", labels = c("Active", "Inactive"))+
+  scale_x_discrete(labels=c("90/0","0/-50", "50/25"))+
+  theme(axis.text.y = element_text(size = 6), axis.text.x = element_text(size = 6), axis.title.y = element_text(size = 6), axis.title.x = element_text(size = 6), plot.title = element_text(hjust = 0.5, face = "bold", size = 8), legend.text = element_text(size = 6), legend.title = element_text(size = 7))+
+  stat_compare_means(aes(group = code), bracket.size = 0.2, label = "p.signif");
+
+
+Figure_a
+```
+
+
+# Récompense au sein des blocs et des sessions
+```{r}
+
+reward.df <- Data %>%
+  filter(event == 65) # selection reward event 
+
+rewardmin.df <- reward.df %>%
+  dplyr::group_by(session,block) %>%
+  dplyr::summarise(blockduration = first(blockduration), couple=first(couple),rewardmin = first(rewardmin), code = "reward") %>%
+  dplyr::ungroup() #calcule le nombre de reward par minute selon bloc
+
+rewardmin.stat <- reward.df %>% #pour les stats
+  dplyr::group_by(session,block) %>%
+  dplyr::summarise(blockduration = first(blockduration), couple=first(couple),rewardmin = first(rewardmin)) %>%
+  dplyr::ungroup() #pour les statistiques
+
+skippedrewardmin.df <- Data %>%
+  dplyr::group_by(session,block) %>%
+  dplyr::summarise(blockduration = first(blockduration), couple=first(couple), rewardmin = first(skippedrewardmin), code = "skipped") %>%
+  dplyr::ungroup() #calcule le nombre de reward par minute selon bloc
+
+rew_skipped_min.df <- rbind(rewardmin.df, skippedrewardmin.df)
+
+Figure_b <-  ggplot(rew_skipped_min.df, aes(x=factor(couple), y=rewardmin, fill = factor(code))) +
+  geom_boxplot() +
+  ggtitle("")+
+  ylab("Reward per minute")+
+  xlab("Probability")+
+  scale_fill_manual(values = c("lightskyblue", "indianred2"), name = "Type of rewards", labels = c("Reward","skippedrew"))+
+  scale_x_discrete(labels=c("90/0","0/-50", "50/25"))+
+  scale_y_continuous(limits =c(0, 10))+
+  theme(axis.title.x = element_text(size = 6), axis.title.y = element_text(size = 6), axis.text.x = element_text(size = 6), axis.text.y = element_text(size = 6), plot.title=element_text(hjust = 0.5, face = "bold", size = 8))
+
+Figure_b <- annotate_figure(Figure_b, top= "Récompenses et récompenses annulées par minutes 
+dans les différentes porbabilités de blocs", bottom = text_grob ("Figure B. Boxplot of rewards and skipped rewards per minute during sessions : rewards in blue and skipped in red.", color = "black",just = "centre", size = 6)) #mise en forme de la figure
+
+Figure_b
+
+```
+
+```{r}
+#tracking of skipped rewards in sessions
+
+skippedrew <- Data %>%
+  filter(event==73)
+
+skippedrew <- skippedrew %>%
+  group_by(session)%>%
+  count(event)%>%
+  rename(totalskipp = "n" )%>%
+  ungroup()
+
+Figure_h <- ggplot(skippedrew, aes(x=session, y=totalskipp))+
+  geom_point( aes(x=session, y=totalskipp))+
+  geom_line( aes(x=session, y=totalskipp))+
+  geom_smooth(aes(x=session, y=totalskipp))+
+  xlab("sessions")+
+  ylab("Number of skipped rewards")+
+  ggtitle("Skipped rewards track")+
+    scale_x_continuous(breaks = skippedrew$session)+
+  theme(axis.title.x = element_text(size = 6), axis.title.y = element_text(size = 6), axis.text.x = element_text(size = 6), axis.text.y = element_text(size = 6), plot.title=element_text(hjust = 0.5, face = "bold", size = 8))
+Figure_h
+
+
+Basline <- reward.df%>%
+  filter(block==1)%>%
+  group_by(session)%>%
+  summarise( reward= unique(reward), code="Basline")%>%
+  ungroup()
+
+NegBlocks <- reward.df%>%
+  filter(couple==2)%>%
+  group_by(session)%>%
+  summarise(reward= mean(reward), code="Negative block")%>%
+  ungroup()
+
+Skipprew <- skippedrew%>%
+  group_by(session)%>%
+  summarise(reward= totalskipp, code="Skipped rew")%>%
+  ungroup()
+
+Basline_Neg_skipp <- rbind(Basline,NegBlocks,Skipprew)
+
+
+Figure_o <- ggplot(Basline_Neg_skipp, aes(x=session, y=reward, color = code))+
+  geom_point( aes(x=session, y=reward, color = code), size=1)+
+  geom_line( aes(x=session, y=reward, color = code), size=1)+
+  xlab("sessions")+
+  ylab("Number of rewards or skipped rewards")+
+  ggtitle("Evolution des récompenses reçuent dans les blocks negatifs 
+  par rapport au premier block (basline) au fil des sessions")+
+  scale_x_continuous(breaks = Basline_Neg_skipp$session)+
+  scale_color_manual(values = c("Red","Green","blue"), name="Legende", labels= c("Basline (first block)", "Negative blocks", "Skipped Rewards"))+
+  theme(axis.title.x = element_text(size = 6), axis.title.y = element_text(size = 6), axis.text.x = element_text(size = 6), axis.text.y = element_text(size = 6), plot.title=element_text(hjust = 0.5, face = "bold", size = 8), legend.position = "bottom")
+Figure_o
+
+Figure_reward <- ggarrange(Figure_h, Figure_o, ncol = 1, nrow = 2)
+Figure_reward
+``` 
+
+#CALCULS Rewards in first block
+#```{r}
+mean_rew_firstb <- reward.df%>%
+  filter(session > length(unique(reward.df$session))-30 & session < length(unique(reward.df$session))-14)%>% #selectionne les 15 dernieres sessions
+  filter(block == 1)%>% #selectionne le block 1
+  group_by(session)%>%
+  count(event)%>%
+  ungroup()%>%
+  summarise(mean_rew_firstb, mean_rew = mean(n));
+
+
+mean_rew_positivb <- reward.df%>%
+  filter(session > length(unique(reward.df$session))-15 ) %>% #selectionne les 15 dernieres sessions
+  filter(couple==1)%>% #selectionne les blocks de probabilité positives
+  group_by(session, block)%>%
+  count(event)%>%
+  ungroup()%>%
+  summarise(mean_rew_positivb, mean_rew = mean(n)); 
+
+mean_rew_firstb <- reward.df%>%
+  filter(session>length(unique(reward.df$session))-15)%>% #selectionne les 15 dernieres sessions
+  filter(block == 1)%>% #selectionne le block 1
+  group_by(session)%>%
+  count(event)%>%
+  ungroup()%>%
+  summarise(mean_rew_firstb, mean_rew = mean(n));
+  
+mean_rew_opt_firstb <-reward.df %>%
+   filter(session>length(unique(reward.df$session))-15)%>% #selectionne les 15 dernieres sessions
+  filter(block == 1)%>% #selectionne le block 1
+  summarise( mean_blockduration = mean(blockduration), Numrew_op =((mean_blockduration/4000)*90)/100) #calcule le nombre optimal de reward qui peuvent etre recuent dans le block 1 (par rapport au block duration)
+
+  
+#``` 
+
+#Analyse touch du bloc 1 et dans chaque probabilités au cours du temps
+```{r}
+
+Data$maxtch <- (60000/4000) #taux max de touches actives par minute (temps refractaire de la tache Causa = 4s)
+
+Data_b1 <- Data%>%
+  filter(block == 1)
+
+Data_b1 <- Data_b1 %>%
+  subset(select = c(session, touchmin, maxtch))
+
+Data_b1 <- unique(Data_b1) #supprime les valeurs en double 
+
+Figure_ee <- Data_b1%>%  
+  ggplot((aes(y = touchmin, x = factor(session))))+  
+  geom_point((aes(y = touchmin, x = factor(session))))+
+  geom_line((aes(y = touchmin, x = factor(session), group=1)))+
+  geom_smooth(aes(y = touchmin, x = factor(session), group=1), method = loess)+
+  geom_hline(yintercept = Data_b1$maxtch, linetype = "dashed", color = "red")+
+  xlab("Sessions") +
+  ylab("Touches par minutes")+
+  ggtitle("Evolution du nombre de touche par minutes au fil des sessions - bloc 1 uniquement")+
+  theme(axis.title.x = element_text(size = 6), axis.title.y = element_text(size = 6), axis.text.x = element_text(size = 6), axis.text.y = element_text(size = 6), plot.title=element_text(hjust = 0.5, face = "bold", size = 8), legend.position = "bottom")
+
+Figure_ee <- ggarrange(Figure_ee, nrow = 1, ncol = 1, legend = "bottom", align = "v")
+Figure_ee <- annotate_figure(Figure_ee, bottom = text_grob ("Red line = optimal touches rate.", color = "black",just = "centre", size = 6))
+Figure_ee
+
+
+##Touch per minute in probabilitys in sessions
+touchmin.df_Prob <- touchmin.df%>%
+  group_by(session, couple)%>%
+  summarise(touchmin= mean(touchmin))%>%
+  ungroup()
+
+touchmin.df_Prob$maxtch <- (60000/4000)
+
+Figure_eee <- ggplot(touchmin.df_Prob, aes(x=session, y=touchmin, color = factor(couple)))+
+  geom_point( aes(x=session, y=touchmin, color = factor(couple)), size=1)+
+  geom_line( aes(x=session, y=touchmin, color = factor(couple)), size=1)+
+  geom_hline(yintercept = touchmin.df_Prob$maxtch, linetype = "dashed", color = "red")+
+  scale_y_continuous(limits = c(0,30))+
+  scale_x_continuous(breaks = touchmin.df_Prob$session)+
+  scale_color_manual(values = c("aquamarine3", "goldenrod2", "deeppink"), name = "Probabilités", labels = c("90/0", "0/-50", "50/25"))+
+  # geom_smooth(aes(x=session, y=touchmin, color = factor(couple)), size=1,linetype="dotdash")+
+  xlab("sessions")+
+  ylab("Touches par minutes")+
+  ggtitle("Evolution du nombre de touche par minutes dans les différentes probabilités de chaque sessions")+
+  theme(axis.title.x = element_text(size = 6), axis.title.y = element_text(size = 6), axis.text.x = element_text(size = 6), axis.text.y = element_text(size = 6), plot.title=element_text(hjust = 0.5, face = "bold", size = 8), legend.position = "bottom")
+
+Figure_touch <- ggarrange(Figure_ee, Figure_eee, ncol = 1, nrow = 2)
+Figure_touch
+```
+
+#boucle pour definir des tbin correspondant a un 1/10 blockduration pour chaque bloc et pour chaque session
+```{r}
+
+Data2 <- data.frame()
+
+sess <- c(unique(Data$session))
+
+for (isession in sess)
+{
+  Y = 1
+  
+  for (iblock in 1:length(unique(Data$block)))
+  {
+    Data$blockduration10 = Data$blockduration/10
+    A <- subset(Data, session == isession & block == iblock)
+    A$tbin <- NA
+    A$ten <- (A$blockstart)+(A$blockduration10)
+    {
+      for (itime in 1 : length(A$time))
+      {
+        if (A$time[itime] < A$ten[itime]) 
+        {
+          A$tbin[itime] <- Y;
+        }
+        if ((A$ten[itime] < A$time[itime]) & (A$time[itime] < (A$ten[itime]+A$blockduration10[itime])))
+        {
+          A$tbin[itime] <- Y+1;
+        }
+        if (((A$ten[itime]+A$blockduration10[itime]) < A$time[itime]) & (A$time[itime] < (A$ten[itime]+((A$blockduration10[itime])*2))))
+        {
+          A$tbin[itime] <- Y+2;
+        }
+        if (((A$ten[itime]+((A$blockduration10[itime])*2)) < A$time[itime]) & (A$time[itime] < (A$ten[itime]+((A$blockduration10[itime])*3))))
+        {
+          A$tbin[itime] <- Y+3;
+        }
+        if (((A$ten[itime]+((A$blockduration10[itime])*3)) < A$time[itime]) & (A$time[itime] < (A$ten[itime]+((A$blockduration10[itime])*4))))
+        {
+          A$tbin[itime] <- Y+4;
+        }
+        if (((A$ten[itime]+((A$blockduration10[itime])*4)) < A$time[itime]) & (A$time[itime] < (A$ten[itime]+((A$blockduration10[itime])*5))))
+        {
+          A$tbin[itime] <- Y+5;
+        }
+        if (((A$ten[itime]+((A$blockduration10[itime])*5)) < A$time[itime]) & (A$time[itime] < (A$ten[itime]+((A$blockduration10[itime])*6))))
+        {
+          A$tbin[itime] <- Y+6;
+        }
+        if (((A$ten[itime]+((A$blockduration10[itime])*6)) < A$time[itime]) & (A$time[itime] < (A$ten[itime]+((A$blockduration10[itime])*7))))
+        {
+          A$tbin[itime] <- Y+7;
+        }
+        if (((A$ten[itime]+((A$blockduration10[itime])*7)) < A$time[itime]) & (A$time[itime] < (A$ten[itime]+((A$blockduration10[itime])*8))))
+        {
+          A$tbin[itime] <- Y+8;
+        }
+        if (((A$ten[itime]+((A$blockduration10[itime])*8)) < A$time[itime]) & (A$time[itime] < (A$blockend[itime])))
+        {
+          A$tbin[itime] <- Y+9;
+        }
+        if (A$time[itime] == last(A$time)) #pour les cas ou il y a un decalage de quelques nanosecondes entre blockend et le dernier time
+        {
+          A$tbin[itime] <- Y+9;
+        }
+      }
+    }
+    Data2 <- rbind(Data2, A)
+    rm(A)
+    Y = Y+10
+  }
+} 
+```
+
+
+#boucle pour definir des tbin correspondant a un 1/5 blockduration pour chaque bloc et pour chaque session
+```{r}
+
+Data3 <- data.frame()
+
+sess <- c(unique(Data$session))
+
+for (isession in sess)
+{
+  Y = 1
+  
+  for (iblock in 1:length(unique(Data$block)))
+  {
+    Data$blockduration5 = Data$blockduration/5
+    A <- subset(Data, session == isession & block == iblock)
+    A$tbin <- NA
+    A$five <- (A$blockstart)+(A$blockduration5)
+    {
+      for (itime in 1 : length(A$time))
+      {
+        if (A$time[itime] < A$five[itime]) 
+        {
+          A$tbin[itime] <- Y;
+        }
+        if ((A$five[itime] < A$time[itime]) & (A$time[itime] < (A$five[itime]+A$blockduration5[itime])))
+        {
+          A$tbin[itime] <- Y+1;
+        }
+        if (((A$five[itime]+A$blockduration5[itime]) < A$time[itime]) & (A$time[itime] < (A$five[itime]+((A$blockduration5[itime])*2))))
+        {
+          A$tbin[itime] <- Y+2;
+        }
+        if (((A$five[itime]+((A$blockduration5[itime])*2)) < A$time[itime]) & (A$time[itime] < (A$five[itime]+((A$blockduration5[itime])*3))))
+        {
+          A$tbin[itime] <- Y+3;
+        }
+        if (((A$five[itime]+((A$blockduration5[itime])*3)) < A$time[itime]) & (A$time[itime] < (A$five[itime]+((A$blockduration5[itime])*4))))
+        {
+          A$tbin[itime] <- Y+4;
+        }
+        if (A$time[itime] == last(A$time)) #pour les cas ou il y a un decalage de quelques nanosecondes entre blockend et le dernier time
+        {
+          A$tbin[itime] <- Y+4;
+        }
+      }
+    }
+    Data3 <- rbind(Data3, A)
+    rm(A)
+    Y = Y+5
+  }
+} 
+```
+
+#comportement des touches au sein des sessions (tbin = 1/5)
+```{r}
+Data_transition1_2 <- data.frame()
+Data_transition1_3 <- data.frame()
+Data_transition2_1 <- data.frame()
+Data_transition3_1 <- data.frame()
+
+
+Data_trans <- Data3
+
+for (ii in unique(Data_trans$session)){
+  currses <- subset(Data_trans, Data_trans$session==ii)   #currses contains 1 session
+  trans =  c(1,1+which(diff(currses$block)!=0))  #index of block changes (first trial of each block)
+  trans <- c(trans, length(currses$event))
+  transtype = matrix(data=NA, nrow=length(trans)-1, ncol=2) #initialise
+  
+  for (iii in 2:length(trans)){ #loop on blocks. start from 2 as ignor the first block
+    transtype[iii-1,1] = currses$couple[trans[iii]-1] #previous block
+    transtype[iii-1,2] = currses$couple[trans[iii]]   #next block
+  }
+  
+  for (iv in 1:(length(unique(trans))-1)) {
+
+      if(transtype[iv,1] == 1 && transtype[iv,2] == 2 ){ 
+     Data_transition1_2 <- rbind(Data_transition1_2, currses[(trans[iv]+1):(trans[iv+2]-1),])
+
+
+        }
+    if(transtype[iv,1] == 1 && transtype[iv,2] == 3){
+    Data_transition1_3 <- rbind(Data_transition1_3, currses[(trans[iv]+1):(trans[iv+2]-1),])
+
+    }
+     if(transtype[iv,1] == 2 && transtype[iv,2] == 1){
+     Data_transition2_1 <- rbind(Data_transition2_1, currses[(trans[iv]+1):(trans[iv+2]-1),])
+
+     }
+     if(transtype[iv,1] == 3 && transtype[iv,2] == 1){
+      Data_transition3_1 <- rbind(Data_transition3_1, currses[(trans[iv]+1):(trans[iv+2]-1),])
+
+     }
+  }
+  rm(currses)
+}
+
+#Verification des données 
+DT1_2 <-  Data_transition1_2 %>% #summarise pour verifier si bons blocks avec bons couples
+  group_by(session, block)%>%
+  summarise(couple=unique(couple), touchemean = mean(touch), rewardmean = mean(reward))%>%
+  ungroup()
+
+DT1_3 <-  Data_transition1_3 %>% #summarise pour verifier si bons blocks avec bons couples
+  group_by(session, block)%>%
+  summarise(couple=unique(couple), touchemean = mean(touch), rewardmean = mean(reward))%>%
+  ungroup()
+
+
+DT2_1 <-  Data_transition2_1 %>% #summarise pour verifier si bons blocks avec bons couples
+  group_by(session, block)%>%
+  summarise(couple=unique(couple), touchemean = mean(touch), rewardmean = mean(reward))%>%
+  ungroup()
+
+
+DT3_1 <-  Data_transition3_1 %>% #summarise pour verifier si bons blocks avec bons couples
+  group_by(session, block)%>%
+  summarise(couple=unique(couple), touchemean = mean(touch), rewardmean = mean(reward))%>%
+  ungroup()
+
+#DataFrames pour construir les graphs:
+
+##TRANSITION 90/0 -> 0/-50 
+Data_transition1_2<- Data_transition1_2%>%
+  group_by(session, block)%>%
+  mutate(timebin=ceiling((time-blockstart)/60000))%>% #coupe le block toutes les 1 minutes, function ceiling permet d'arondir le temps 
+  filter(timebin!=0)%>%
+  ungroup()
+
+
+Data_transition1_2$counttouch <- NA #creat a new column to count touch in following loop
+
+  for(yy in 1:length(Data_transition1_2$block)){
+    
+    if (Data_transition1_2$event[yy] == 74 ||  Data_transition1_2$event[yy] == 75){
+      Data_transition1_2$counttouch[yy] <- 1 #count 1 touch if event is touch active or inactive
+    }
+  
+     else{
+      Data_transition1_2$counttouch[yy] <- 0 #count 0 touch if the event is not a touch
+    }
+  }
+counttouch_trans1_2<-Data_transition1_2%>%
+  group_by(session, block, couple, timebin)%>% 
+  summarise(count_touch=sum(counttouch))%>%
+  ungroup()%>%
+  group_by(couple, timebin)%>%
+  summarise(mean=mean(count_touch), code="touch")%>%
+  ungroup()%>%
+  mutate(x=row_number()); # créer une colonne x pour pouvoir ploter les abscisses 
+
+
+
+Data_transition1_2$countrew <- NA #creat a new column to count rew in following loop
+
+  for(yy in 1:length(Data_transition1_2$block)){
+    
+    if (Data_transition1_2$event[yy] == 65){
+      Data_transition1_2$countrew[yy] <- 1 #count 1 touch if event is rew
+    }
+  
+     else{
+      Data_transition1_2$countrew[yy] <- 0 #count 0 rew if the event is not a touch
+    }
+  }
+countrew_trans1_2<- Data_transition1_2%>%
+  group_by(session, block, couple, timebin)%>% 
+  summarise(count_rew=sum(countrew))%>%
+  ungroup()%>%
+  group_by(couple, timebin)%>%
+  summarise(mean=mean(count_rew), code="reward")%>%
+  ungroup()%>%
+  mutate(x=row_number());
+
+
+count_trans1_2<-rbind(countrew_trans1_2,counttouch_trans1_2)
+
+
+#graph : 
+fig_trans1_2<- ggplot(count_trans1_2, aes(x=factor(x), y=mean, color=factor(code)))+
+  geom_line(aes(x=x, y=mean, color=factor(code)),size=0.5, linetype="dotdash")+
+  geom_point(aes(x=x, y=mean, color=factor(code)),size=2, shape=16)+
+  ggtitle("Transition 90/0 to 0/-50")+
+  xlab("timebin en minute")+
+  ylab("")+
+  labs(color = "Evenement")+
+  # geom_segment(aes(x= 1, xend=14, y=13.5, yend=13.5), color="coral2", linetype="solid", size=0.35)+
+  # geom_segment(aes(x= 1, xend=7.5, y=15, yend=15), color="turquoise3",linetype="solid",size=0.35)+
+  # geom_segment(aes(x= 7.5, xend=14, y=0, yend=0), color="turquoise3",linetype="solid", size=0.35)+
+  geom_vline(xintercept = c(7.5), linetype="dotted")+
+  scale_y_continuous(limits = c(0,30))+
+  scale_x_continuous (breaks=c(1,2,3,4,5,6,7,7.5,8,9,10,11,12,13,14),labels= c("-7","-6","-5","-4","-3","-2","-1","0","1","2","3","4","5","6","7"))+
+  scale_color_manual(values = c("coral2", "turquoise3"), name = "Evenement", labels = c("Recompense", "Touches"))+
+  theme(axis.title.y = element_blank(), axis.title.x = element_blank(), axis.text.x = element_text(size = 6), axis.text.y = element_text(size = 6), plot.title = element_text(hjust = 0.5, size = 9), legend.text = element_text(size = 6), legend.title = element_text(size = 7))
+
+##TRANSITION 90/0 -> 50/25
+Data_transition1_3<- Data_transition1_3%>%
+  group_by(session, block)%>%
+  mutate(timebin=ceiling((time-blockstart)/60000))%>% #coupe le block toutes les 1 minutes, function ceiling permet d'arondir le temps   
+  filter(timebin!=0)%>%
+  ungroup();
+
+Data_transition1_3$counttouch <- NA #creat a new column to count touch in following loop
+
+  for(yy in 1:length(Data_transition1_3$block)){
+    
+    if (Data_transition1_3$event[yy] == 74 ||  Data_transition1_3$event[yy] == 75){
+      Data_transition1_3$counttouch[yy] <- 1 #count 1 touch if event is touch active or inactive
+    }
+  
+     else{
+      Data_transition1_3$counttouch[yy] <- 0 #count 0 touch if the event is not a touch
+    }
+  }
+counttouch_trans1_3<-Data_transition1_3%>%
+  group_by(session, block, couple, timebin)%>% 
+  summarise(count_touch=sum(counttouch))%>%
+  ungroup()%>%
+  group_by(couple, timebin)%>%
+  summarise(mean=mean(count_touch), code="touch")%>%
+  ungroup()%>%
+  mutate(x=row_number()); # créer une colonne x pour pouvoir ploter les abscisses 
+
+
+
+Data_transition1_3$countrew <- NA #creat a new column to count rew in following loop
+
+  for(yy in 1:length(Data_transition1_3$block)){
+    
+    if (Data_transition1_3$event[yy] == 65){
+      Data_transition1_3$countrew[yy] <- 1 #count 1 touch if event is rew
+    }
+  
+     else{
+      Data_transition1_3$countrew[yy] <- 0 #count 0 rew if the event is not a touch
+    }
+  }
+countrew_trans1_3<- Data_transition1_3%>%
+   group_by(session, block, couple, timebin)%>% 
+  summarise(count_rew=sum(countrew))%>%
+  ungroup()%>%
+  group_by(couple, timebin)%>%
+  summarise(mean=mean(count_rew), code="reward")%>%
+  ungroup()%>%
+  mutate(x=row_number());
+
+count_trans1_3<-rbind(countrew_trans1_3,counttouch_trans1_3)
+
+#graph 
+fig_trans1_3<- ggplot(count_trans1_3, aes(x=factor(x), y=mean, color=factor(code)))+
+  geom_line(aes(x=x, y=mean, color=factor(code)),size=0.5, linetype="dotdash")+
+  geom_point(aes(x=x, y=mean, color=factor(code)),size=2, shape=16)+
+  ggtitle("Transition 90/0 to 50/25")+
+  xlab("timebin en minute")+
+  ylab("")+
+  labs(color = "Evenement")+
+  # geom_segment(x= 0, xend=7.5, y=13.5, yend=13.5)+
+  # geom_segment(x= 7.5, xend=14, y=7.5, yend=7.5)+
+  geom_vline(xintercept = c(7.5), linetype="dotted")+
+  scale_y_continuous(limits = c(0,30))+
+  scale_x_continuous (breaks=c(1,2,3,4,5,6,7,7.5,8,9,10,11,12,13,14),labels= c("-7","-6","-5","-4","-3","-2","-1","0","1","2","3","4","5","6","7"))+
+  scale_color_manual(values = c("coral2", "turquoise3"), name = "Evenement", labels = c("Recompense", "Touches"))+
+  theme(axis.title.y = element_blank(), axis.title.x = element_blank(), axis.text.x = element_text(size = 6), axis.text.y = element_text(size = 6), plot.title = element_text(hjust = 0.5, size = 9), legend.text = element_text(size = 6), legend.title = element_text(size = 7))
+
+##TRANSITION 0/-50 -> 90/0 
+Data_transition2_1<- Data_transition2_1%>%
+  group_by(session, block)%>%
+  mutate(timebin=ceiling((time-blockstart)/60000))%>% #coupe le block toutes les 1 minutes, function ceiling permet d'arondir le temps 
+  filter(timebin!=0)%>%
+  ungroup();
+
+Data_transition2_1$counttouch <- NA #creat a new column to count touch in following loop
+
+  for(yy in 1:length(Data_transition2_1$block)){
+    
+    if (Data_transition2_1$event[yy] == 74 ||  Data_transition2_1$event[yy] == 75){
+      Data_transition2_1$counttouch[yy] <- 1 #count 1 touch if event is touch active or inactive
+    }
+  
+     else{
+      Data_transition2_1$counttouch[yy] <- 0 #count 0 touch if the event is not a touch
+    }
+  }
+counttouch_trans2_1<-Data_transition2_1%>%
+  group_by(session, block, couple, timebin)%>% 
+  summarise(count_touch=sum(counttouch))%>%
+  ungroup()%>%
+  group_by(desc(couple), timebin)%>%
+  summarise(mean=mean(count_touch), code="touch")%>%
+  ungroup()%>%
+  mutate(x=row_number()); # créer une colonne x pour pouvoir ploter les abscisses 
+
+
+
+Data_transition2_1$countrew <- NA #creat a new column to count rew in following loop
+
+  for(yy in 1:length(Data_transition2_1$block)){
+    
+    if (Data_transition2_1$event[yy] == 65){
+      Data_transition2_1$countrew[yy] <- 1 #count 1 touch if event is rew
+    }
+  
+     else{
+      Data_transition2_1$countrew[yy] <- 0 #count 0 rew if the event is not a touch
+    }
+  }
+countrew_trans2_1<- Data_transition2_1%>%
+   group_by(session, block, couple, timebin)%>% 
+  summarise(count_rew=sum(countrew))%>%
+  ungroup()%>%
+  group_by(desc(couple), timebin)%>%
+  summarise(mean=mean(count_rew), code="reward")%>%
+  ungroup()%>%
+  mutate(x=row_number());
+
+
+count_trans2_1<-rbind(countrew_trans2_1,counttouch_trans2_1)
+
+#graph 
+fig_trans2_1<- ggplot(count_trans2_1, aes(x=factor(x), y=mean, color=factor(code)))+
+  geom_line(aes(x=x, y=mean, color=factor(code)),size=0.5, linetype="dotdash")+
+  geom_point(aes(x=x, y=mean, color=factor(code)),size=2, shape=16)+
+  ggtitle("Transition 0/-50 to 90/0")+
+  xlab("timebin en minute")+
+  ylab("")+
+  labs(color = "Evenement")+
+  # geom_hline(yintercept = Data$maxtch, linetype = "dashed", color = "red")+
+  # geom_segment(x= 0, xend=7.5, y=0, yend=0)+
+  # geom_segment(x= 7.5, xend=14, y=13.5, yend=13.5)+
+  geom_vline(xintercept = c(7.5), linetype="dotted")+
+  scale_y_continuous(limits = c(0,30))+
+  scale_x_continuous (breaks=c(1,2,3,4,5,6,7,7.5,8,9,10,11,12,13,14),labels= c("-7","-6","-5","-4","-3","-2","-1","0","1","2","3","4","5","6","7"))+
+  scale_color_manual(values = c("coral2", "turquoise3"), name = "Evenement", labels = c("Recompense", "Touches"))+
+  theme(axis.title.y = element_blank(), axis.title.x = element_blank(), axis.text.x = element_text(size = 6), axis.text.y = element_text(size = 6), plot.title = element_text(hjust = 0.5, size = 9), legend.text = element_text(size = 6), legend.title = element_text(size = 7))
+
+
+##TRANSITION 50/25 -> 90/0 
+Data_transition3_1<- Data_transition3_1%>%
+  group_by(session, block)%>%
+  mutate(timebin=ceiling((time-blockstart)/60000))%>% #coupe le block toutes les 1 minutes, function ceiling permet d'arondir le temps 
+  filter(timebin!=0)%>%
+  ungroup();
+
+Data_transition3_1$counttouch <- NA #creat a new column to count touch in following loop
+
+  for(yy in 1:length(Data_transition3_1$block)){
+    
+    if (Data_transition3_1$event[yy] == 74 ||  Data_transition3_1$event[yy] == 75){
+      Data_transition3_1$counttouch[yy] <- 1 #count 1 touch if event is touch active or inactive
+    }
+  
+     else{
+      Data_transition3_1$counttouch[yy] <- 0 #count 0 touch if the event is not a touch
+    }
+  }
+counttouch_trans3_1<-Data_transition3_1%>%
+  group_by(session, block, couple, timebin)%>% 
+  summarise(count_touch=sum(counttouch))%>%
+  ungroup()%>%
+  group_by(desc(couple), timebin)%>%
+  summarise(mean=mean(count_touch), code="touch")%>%
+  ungroup()%>%
+  mutate(x=row_number()); # créer une colonne x pour pouvoir ploter les abscisses 
+
+
+
+Data_transition3_1$countrew <- NA #creat a new column to count rew in following loop
+
+  for(yy in 1:length(Data_transition3_1$block)){
+    
+    if (Data_transition3_1$event[yy] == 65){
+      Data_transition3_1$countrew[yy] <- 1 #count 1 touch if event is rew
+    }
+  
+     else{
+      Data_transition3_1$countrew[yy] <- 0 #count 0 rew if the event is not a touch
+    }
+  }
+countrew_trans3_1<- Data_transition3_1%>%
+  group_by(session, block, couple, timebin)%>% 
+  summarise(count_rew=sum(countrew))%>%
+  ungroup()%>%
+  group_by(desc(couple), timebin)%>%
+  summarise(mean=mean(count_rew), code="reward")%>%
+  ungroup()%>%
+  mutate(x=row_number());
+
+
+count_trans3_1<-rbind(countrew_trans3_1,counttouch_trans3_1)
+
+#graph 
+fig_trans3_1<- ggplot(count_trans3_1, aes(x=factor(x), y=mean, color=factor(code)))+
+  geom_line(aes(x=x, y=mean, color=factor(code)),size=0.5, linetype="dotdash")+
+  geom_point(aes(x=x, y=mean, color=factor(code)),size=2, shape=16)+
+  ggtitle("Transition 50/25 to 90/0")+
+  xlab("timebin en minute")+
+  ylab("")+
+  labs(color = "Evenement")+
+  # geom_hline(yintercept = Data$maxtch, linetype = "dashed", color = "red")+
+  # geom_segment(x= 0, xend=7.5, y=7.5, yend=7.5)+
+  # geom_segment(x= 7.5, xend=14, y=13.5, yend=13.5)+
+  geom_vline(xintercept = c(7.5), linetype="dotted")+
+  scale_y_continuous(limits = c(0,30))+
+  scale_x_continuous (breaks=c(1,2,3,4,5,6,7,7.5,8,9,10,11,12,13,14),labels= c("-7","-6","-5","-4","-3","-2","-1","0","1","2","3","4","5","6","7"))+
+  scale_color_manual(values = c("coral2", "turquoise3"), name = "Evenement", labels = c("Recompense", "Touches"))+
+  theme(axis.title.y = element_blank(), axis.title.x = element_blank(), axis.text.x = element_text(size = 6), axis.text.y = element_text(size = 6), plot.title = element_text(hjust = 0.5, size = 9), legend.text = element_text(size = 6), legend.title = element_text(size = 7))
+
+
+Figure_transitions <- ggarrange(fig_trans1_2, fig_trans1_3, fig_trans2_1, fig_trans3_1, nrow = 2, ncol = 2, common.legend = TRUE, align = "v", legend="top")
+
+Figure_transitions <- annotate_figure(Figure_transitions, top= "Transitions entre les blocs à différents moments de la session", left= text_grob ("Evenement par minute", rot = 90), bottom = text_grob("temps en minute")) #mise en forme de la figure
+
+
+Figure_transitions
+```
+
+
+Mise en page des figures dans un même pdf
+```{r}
+#Mettre qu'une seule figure par page
+a <- annotate_figure(Figure_a, bottom = text_grob ("Data source: \n Causa 5b data set of Pippa", color = "black",hjust = 1.1, x = 1, face = "italic", size = 5), fig.lab = "A",fig.lab.size = 15, fig.lab.face = "bold")
+
+b <- annotate_figure(Figure_b, bottom = text_grob ("Data source: \n Causa 5b data set of Pippa", color = "black",hjust = 1.1, x = 1, face = "italic", size = 5), fig.lab = "B",fig.lab.size = 15, fig.lab.face = "bold")
+
+c <- annotate_figure(Figure_reward, bottom = text_grob ("Data source: \n Causa 5b data set of Pippa", color = "black",hjust = 1.1, x = 1, face = "italic", size = 5), fig.lab = "C",fig.lab.size = 15, fig.lab.face = "bold")
+
+d <- annotate_figure(Figure_touch, bottom = text_grob ("Data source: \n Causa 5b data set of Pippa", color = "black",hjust = 1.1, x = 1, face = "italic", size = 5), fig.lab = "D",fig.lab.size = 15, fig.lab.face = "bold")
+
+e <- annotate_figure(Figure_transitions, bottom = text_grob ("Data source: \n Causa 5b data set of Pippa", color = "black",hjust = 1.1, x = 1, face = "italic", size = 5), fig.lab = "E",fig.lab.size = 15, fig.lab.face = "bold")
+
+
+#Fig_tot <- ggarrange(a,b,h,c,d,e,f,g, nrow = 1, ncol = 1)
+
+#ggexport(plotlist = Fig_tot, filename = "Da_Behavioural_statement_CAUSA4.pdf", nrow = 1, ncol = 1)
+
+
+# aa <- ggarrange(a, f, nrow = 2, ncol = 1)
+# aa <- ggarrange(a, f, nrow = 2, ncol = 1)
+# bb <- ggarrange(b, h, nrow = 2, ncol = 1)
+# ee <- ggarrange(e, g, nrow = 2, ncol = 1)
+# cc <- ggarrange(c, d, nrow = 1, ncol = 2)
+
+fig_tot <- ggarrange(a,b,c,d,e, nrow = 1, ncol = 1)
+
+ggexport(plotlist = fig_tot, filename = "Pi_Behavioural_statement_CAUSA5b.pdf", nrow = 1, ncol = 1)
+ ```
